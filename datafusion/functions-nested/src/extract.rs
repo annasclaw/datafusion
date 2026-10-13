@@ -227,14 +227,17 @@ where
         let index: O = index.try_into().map_err(|_| {
             exec_datafusion_err!("array_element got invalid index: {index}")
         })?;
-        // 0 ~ len - 1
-        let adjusted_zero_index = if index < O::usize_as(0) {
-            index + len
-        } else {
-            index - O::usize_as(1)
-        };
+        // 1 ~ len
+        //
+        // NOTE: negative subscripts are NOT treated as an offset from the end.
+        // PostgreSQL returns NULL for `arr[-1]`; `array_slice` is the function
+        // that counts backwards from the end.
+        if index < O::usize_as(1) {
+            return Ok(None);
+        }
 
-        if O::usize_as(0) <= adjusted_zero_index && adjusted_zero_index < len {
+        let adjusted_zero_index = index - O::usize_as(1);
+        if adjusted_zero_index < len {
             Ok(Some(adjusted_zero_index))
         } else {
             // Out of bounds
@@ -1214,6 +1217,25 @@ mod tests {
 
         let result = general_array_element(&list_array, &indexes)?;
         let expected = Int32Array::from(vec![Some(1), None, Some(5)]);
+
+        assert_eq!(result.as_primitive::<Int32Type>(), &expected);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_array_element_negative_index_returns_null() -> Result<()> {
+        // PostgreSQL returns NULL for negative subscripts rather than counting
+        // back from the end of the array. See apache/datafusion#22254.
+        let list_array = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+            Some(vec![Some(1), Some(2), Some(3)]),
+            Some(vec![Some(4)]),
+            Some(vec![Some(5)]),
+        ]);
+        let indexes = Int64Array::from(vec![-1, -2, -3]);
+
+        let result = general_array_element(&list_array, &indexes)?;
+        let expected = Int32Array::from(vec![None, None, None]);
 
         assert_eq!(result.as_primitive::<Int32Type>(), &expected);
 
